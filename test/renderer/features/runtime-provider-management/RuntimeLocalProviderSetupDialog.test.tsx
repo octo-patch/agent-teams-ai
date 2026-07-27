@@ -258,6 +258,7 @@ describe('RuntimeLocalProviderSetupDialog', () => {
       providerId: 'ollama',
       defaultModelId: 'qwen3:8b',
       setAsDefault: true,
+      apiKey: null,
     });
     expect(mocks.listLocalProviders).toHaveBeenCalledWith({
       runtimeId: 'opencode',
@@ -494,11 +495,13 @@ describe('RuntimeLocalProviderSetupDialog', () => {
     });
 
     await vi.waitFor(() => {
-      expect(host.textContent).toContain('Local providers');
-      expect(host.textContent).toContain('1 of 2 local providers running.');
-      expect(host.textContent).toContain('Offline providers remain configured but cannot launch.');
+      expect(host.textContent).toContain('Model endpoints');
+      expect(host.textContent).toContain('1 of 2 endpoints available.');
+      expect(host.textContent).toContain(
+        'Unavailable endpoints remain configured but cannot launch.'
+      );
       expect(host.textContent).toContain('Global default');
-      expect(host.textContent).toContain('Offline');
+      expect(host.textContent).toContain('Unavailable');
       expect(host.textContent).toContain('1 configured model');
     });
     expect(host.querySelector('[data-testid="configured-local-provider-ollama"]')).not.toBeNull();
@@ -539,7 +542,7 @@ describe('RuntimeLocalProviderSetupDialog', () => {
       addButton?.click();
       await Promise.resolve();
     });
-    expect(host.textContent).toContain('Add a local provider');
+    expect(host.textContent).toContain('Add a model endpoint');
     expect(host.textContent).toContain('Atomic Chat');
     expect(
       host.querySelector('#runtime-local-provider-project-default')?.getAttribute('data-state')

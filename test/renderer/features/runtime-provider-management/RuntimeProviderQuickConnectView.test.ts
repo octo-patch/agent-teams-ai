@@ -107,7 +107,7 @@ describe('RuntimeProviderQuickConnectView', () => {
     });
 
     const localButton = Array.from(host.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Set up local model')
+      button.textContent?.includes('Set up model endpoint')
     );
     const browseButton = Array.from(host.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Browse all providers')
@@ -160,7 +160,7 @@ describe('RuntimeProviderQuickConnectView', () => {
       buttons.find((button) => button.textContent?.includes('Browse all providers'))?.disabled
     ).toBe(true);
     expect(
-      buttons.find((button) => button.textContent?.includes('Set up local model'))?.disabled
+      buttons.find((button) => button.textContent?.includes('Set up model endpoint'))?.disabled
     ).toBe(true);
     expect(host.querySelectorAll('[data-testid^="provider-quick-card-"]')).toHaveLength(5);
     expect(host.querySelector('[data-testid="provider-quick-card-claude"]')).toBeNull();
