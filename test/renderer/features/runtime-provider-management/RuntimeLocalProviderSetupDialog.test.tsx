@@ -671,6 +671,15 @@ describe('RuntimeLocalProviderSetupDialog', () => {
     expect(mocks.probeLocalProvider).toHaveBeenCalledWith(
       expect.objectContaining({ apiKey: 'replacement-secret' })
     );
+    await act(async () => {
+      saveButton?.click();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() =>
+      expect(mocks.configureLocalProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ apiKey: 'replacement-secret' })
+      )
+    );
   });
 
   it('does not let a deleted project proceed to configuration', async () => {
