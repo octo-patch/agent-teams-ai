@@ -258,6 +258,32 @@ describe('inspectOpenCodeLocalModelRuntimeReadiness', () => {
     expect(probeCoordination).toHaveBeenCalledTimes(2);
   });
 
+  it('delegates authenticated remote endpoint verification to OpenCode', async () => {
+    const inventory = createInventory([
+      {
+        ...customProvider(),
+        baseUrl: 'https://models.example.com/v1',
+      },
+    ]);
+    const probeCoordination = vi.fn(coordinationPassed);
+
+    const result = await inspectOpenCodeLocalModelRuntimeReadiness(
+      {
+        projectPath: TEST_PROJECT_PATH,
+        modelRoute: 'local-lab/team-model',
+      },
+      { inventory, probeCoordination }
+    );
+
+    expect(result).toMatchObject({
+      severity: 'warning',
+      code: 'local_runtime_unverified',
+      coordinationProbeStatus: null,
+      message: expect.stringContaining('OpenCode execution probe is authoritative'),
+    });
+    expect(probeCoordination).not.toHaveBeenCalled();
+  });
+
   it('blocks a known local route when its provider configuration is unavailable', async () => {
     const inventory = createInventory([]);
 

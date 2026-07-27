@@ -148,9 +148,16 @@ describe('registerRuntimeProviderManagementIpc', () => {
           runtimeId: 'opencode',
           presetId: 'ollama',
           baseUrl: 'http://127.0.0.1:11434/v1',
+          apiKey: 'remote-secret',
         }
       )
     ).resolves.toEqual(probeResponse);
+    expect(feature.probeLocalProvider).toHaveBeenCalledWith({
+      runtimeId: 'opencode',
+      presetId: 'ollama',
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      apiKey: 'remote-secret',
+    });
     await expect(
       handlers.get(RUNTIME_LOCAL_PROVIDER_CONFIGURE)?.(
         {},
@@ -159,6 +166,7 @@ describe('registerRuntimeProviderManagementIpc', () => {
           scope: 'project',
           projectPath: '/tmp/sandbox',
           presetId: 'ollama',
+          apiKey: 'remote-secret',
           defaultModelId: 'qwen3:8b',
           setAsDefault: true,
         }
@@ -169,6 +177,7 @@ describe('registerRuntimeProviderManagementIpc', () => {
       scope: 'project',
       projectPath: '/tmp/sandbox',
       presetId: 'ollama',
+      apiKey: 'remote-secret',
       defaultModelId: 'qwen3:8b',
       setAsDefault: true,
     });
@@ -220,6 +229,18 @@ describe('registerRuntimeProviderManagementIpc', () => {
     );
     expect(invalidProviderFilter).toMatchObject({ error: { code: 'invalid-input' } });
     expect(feature.listLocalProviders).toHaveBeenCalledTimes(2);
+
+    const invalidApiKey = await handlers.get(RUNTIME_LOCAL_PROVIDER_PROBE)?.(
+      {},
+      {
+        runtimeId: 'opencode',
+        presetId: 'custom',
+        baseUrl: 'https://models.example.com/v1',
+        apiKey: 'invalid\nkey',
+      }
+    );
+    expect(invalidApiKey).toMatchObject({ error: { code: 'invalid-input' } });
+    expect(feature.probeLocalProvider).toHaveBeenCalledTimes(1);
   });
 
   it('accepts every registered companion id and rejects unknown transport input', async () => {
