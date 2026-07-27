@@ -6,6 +6,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { OpenCodeLocalProviderConnector } from './OpenCodeLocalProviderConnector';
 
+const writeOpenCodeConfig = async (
+  directory: string,
+  config: unknown,
+  fileName = 'opencode.json'
+): Promise<void> => {
+  await fs.mkdir(directory, { recursive: true });
+  const contents = typeof config === 'string' ? config : JSON.stringify(config);
+  await fs.writeFile(path.join(directory, fileName), contents, 'utf8');
+};
+
 describe('OpenCodeLocalProviderConnector local provider list', () => {
   let tempDir: string;
 
@@ -19,9 +29,8 @@ describe('OpenCodeLocalProviderConnector local provider list', () => {
 
   it('reads every project-local provider and reports its live state and default', async () => {
     const projectPath = path.join(tempDir, 'sandbox-project');
-    await fs.mkdir(projectPath, { recursive: true });
-    await fs.writeFile(
-      path.join(projectPath, 'opencode.jsonc'),
+    await writeOpenCodeConfig(
+      projectPath,
       [
         '{',
         '  // project-owned comment',
@@ -45,7 +54,7 @@ describe('OpenCodeLocalProviderConnector local provider list', () => {
         '  }',
         '}',
       ].join('\n'),
-      'utf8'
+      'opencode.jsonc'
     );
     const requests: string[] = [];
     const fetchImpl = (async (input: string | URL | Request) => {
@@ -117,20 +126,15 @@ describe('OpenCodeLocalProviderConnector local provider list', () => {
 
   it('treats a remote endpoint with a built-in provider id as custom', async () => {
     const projectPath = path.join(tempDir, 'remote-builtin-id-project');
-    await fs.mkdir(projectPath, { recursive: true });
-    await fs.writeFile(
-      path.join(projectPath, 'opencode.json'),
-      JSON.stringify({
-        provider: {
-          ollama: {
-            npm: '@ai-sdk/openai-compatible',
-            options: { baseURL: 'https://models.example.com/v1' },
-            models: { 'remote-model': {} },
-          },
+    await writeOpenCodeConfig(projectPath, {
+      provider: {
+        ollama: {
+          npm: '@ai-sdk/openai-compatible',
+          options: { baseURL: 'https://models.example.com/v1' },
+          models: { 'remote-model': {} },
         },
-      }),
-      'utf8'
-    );
+      },
+    });
     const connector = new OpenCodeLocalProviderConnector({
       fetchImpl: (async () => {
         throw new Error('Remote providers must not be fetched while listing.');
@@ -155,23 +159,18 @@ describe('OpenCodeLocalProviderConnector local provider list', () => {
 
   it('defers a credential-backed loopback endpoint to OpenCode instead of probing without its key', async () => {
     const projectPath = path.join(tempDir, 'credential-loopback-project');
-    await fs.mkdir(projectPath, { recursive: true });
-    await fs.writeFile(
-      path.join(projectPath, 'opencode.json'),
-      JSON.stringify({
-        provider: {
-          'local-secure': {
-            npm: '@ai-sdk/openai-compatible',
-            options: {
-              baseURL: 'http://127.0.0.1:18080/v1',
-              apiKey: '{file:~/.config/opencode/agent-teams-credentials/local-secure.key}',
-            },
-            models: { 'team-model': {} },
+    await writeOpenCodeConfig(projectPath, {
+      provider: {
+        'local-secure': {
+          npm: '@ai-sdk/openai-compatible',
+          options: {
+            baseURL: 'http://127.0.0.1:18080/v1',
+            apiKey: '{file:~/.config/opencode/agent-teams-credentials/local-secure.key}',
           },
+          models: { 'team-model': {} },
         },
-      }),
-      'utf8'
-    );
+      },
+    });
     const connector = new OpenCodeLocalProviderConnector({
       fetchImpl: (async () => {
         throw new Error('Credential-backed providers must not be fetched without their key.');
@@ -198,25 +197,20 @@ describe('OpenCodeLocalProviderConnector local provider list', () => {
 
   it('filters by provider id before probing so custom local detection stays cheap', async () => {
     const projectPath = path.join(tempDir, 'filtered-project');
-    await fs.mkdir(projectPath, { recursive: true });
-    await fs.writeFile(
-      path.join(projectPath, 'opencode.json'),
-      JSON.stringify({
-        provider: {
-          'local-lab': {
-            npm: '@ai-sdk/openai-compatible',
-            options: { baseURL: 'http://127.0.0.1:18080/v1' },
-            models: { 'team-model': {} },
-          },
-          ollama: {
-            npm: '@ai-sdk/openai-compatible',
-            options: { baseURL: 'http://127.0.0.1:11434/v1' },
-            models: { 'qwen3:8b': {} },
-          },
+    await writeOpenCodeConfig(projectPath, {
+      provider: {
+        'local-lab': {
+          npm: '@ai-sdk/openai-compatible',
+          options: { baseURL: 'http://127.0.0.1:18080/v1' },
+          models: { 'team-model': {} },
         },
-      }),
-      'utf8'
-    );
+        ollama: {
+          npm: '@ai-sdk/openai-compatible',
+          options: { baseURL: 'http://127.0.0.1:11434/v1' },
+          models: { 'qwen3:8b': {} },
+        },
+      },
+    });
     const requestedUrls: string[] = [];
     const connector = new OpenCodeLocalProviderConnector({
       fetchImpl: (async (input: string | URL | Request) => {
@@ -246,21 +240,16 @@ describe('OpenCodeLocalProviderConnector local provider list', () => {
 
   it('lists providers from the global config without requiring a project', async () => {
     const globalConfigDirectory = path.join(tempDir, '.config', 'opencode');
-    await fs.mkdir(globalConfigDirectory, { recursive: true });
-    await fs.writeFile(
-      path.join(globalConfigDirectory, 'opencode.json'),
-      JSON.stringify({
-        model: 'lmstudio/global-model',
-        provider: {
-          lmstudio: {
-            npm: '@ai-sdk/openai-compatible',
-            options: { baseURL: 'http://127.0.0.1:1234/v1' },
-            models: { 'global-model': {} },
-          },
+    await writeOpenCodeConfig(globalConfigDirectory, {
+      model: 'lmstudio/global-model',
+      provider: {
+        lmstudio: {
+          npm: '@ai-sdk/openai-compatible',
+          options: { baseURL: 'http://127.0.0.1:1234/v1' },
+          models: { 'global-model': {} },
         },
-      }),
-      'utf8'
-    );
+      },
+    });
     const fetchImpl = (async () =>
       new Response(JSON.stringify({ data: [{ id: 'global-model' }] }), {
         status: 200,
