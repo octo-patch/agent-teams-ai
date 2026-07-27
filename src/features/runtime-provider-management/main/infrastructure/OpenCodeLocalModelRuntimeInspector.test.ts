@@ -258,7 +258,7 @@ describe('inspectOpenCodeLocalModelRuntimeReadiness', () => {
     expect(probeCoordination).toHaveBeenCalledTimes(2);
   });
 
-  it('delegates authenticated remote endpoint verification to OpenCode', async () => {
+  it('skips the credentialless coordination probe for a remote endpoint', async () => {
     const inventory = createInventory([
       {
         ...customProvider(),
@@ -280,6 +280,27 @@ describe('inspectOpenCodeLocalModelRuntimeReadiness', () => {
       code: 'local_runtime_unverified',
       coordinationProbeStatus: null,
       message: expect.stringContaining('OpenCode execution probe is authoritative'),
+    });
+    expect(probeCoordination).not.toHaveBeenCalled();
+  });
+
+  it('skips the credentialless coordination probe for a loopback endpoint with an API key', async () => {
+    const inventory = createInventory([{ ...customProvider(), hasConfiguredApiKey: true }]);
+    const probeCoordination = vi.fn(coordinationPassed);
+
+    const result = await inspectOpenCodeLocalModelRuntimeReadiness(
+      {
+        projectPath: TEST_PROJECT_PATH,
+        modelRoute: 'local-lab/team-model',
+      },
+      { inventory, probeCoordination }
+    );
+
+    expect(result).toMatchObject({
+      severity: 'warning',
+      code: 'local_runtime_unverified',
+      coordinationProbeStatus: null,
+      message: expect.stringContaining('configured with an API key'),
     });
     expect(probeCoordination).not.toHaveBeenCalled();
   });

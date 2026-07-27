@@ -111,14 +111,14 @@ export function normalizeRuntimeLocalProviderTarget(input: {
       'Choose Custom OpenAI-compatible server for a remote endpoint.'
     );
   }
-  if (!loopback && url.protocol !== 'https:') {
-    throw new RuntimeLocalProviderValidationError(
-      'Remote provider URLs must use HTTPS to protect model requests and API keys.'
-    );
-  }
   if (isUnusableNetworkHostname(url.hostname)) {
     throw new RuntimeLocalProviderValidationError(
       'Provider URL must use a reachable host, not an unspecified or broadcast address.'
+    );
+  }
+  if (!loopback && url.protocol !== 'https:') {
+    throw new RuntimeLocalProviderValidationError(
+      'Remote provider URLs must use HTTPS to protect model requests and API keys.'
     );
   }
   if (url.search || url.hash) {

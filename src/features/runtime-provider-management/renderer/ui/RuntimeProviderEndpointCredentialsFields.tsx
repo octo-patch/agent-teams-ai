@@ -6,6 +6,7 @@ import type { JSX } from 'react';
 interface RuntimeProviderEndpointCredentialsFieldsProps {
   readonly providerId: string;
   readonly apiKey: string;
+  readonly hasConfiguredApiKey: boolean;
   readonly disabled: boolean;
   readonly onProviderIdChange: (value: string) => void;
   readonly onApiKeyChange: (value: string) => void;
@@ -15,6 +16,7 @@ interface RuntimeProviderEndpointCredentialsFieldsProps {
 export const RuntimeProviderEndpointCredentialsFields = ({
   providerId,
   apiKey,
+  hasConfiguredApiKey,
   disabled,
   onProviderIdChange,
   onApiKeyChange,
@@ -55,7 +57,9 @@ export const RuntimeProviderEndpointCredentialsFields = ({
         }}
       />
       <p className="text-[11px] text-[var(--color-text-muted)]">
-        Stored in a private key file referenced by opencode.json.
+        {hasConfiguredApiKey
+          ? 'This endpoint has a stored key. Re-enter it to verify and save changes.'
+          : 'Stored in a private key file referenced by opencode.json.'}
       </p>
     </div>
   </div>

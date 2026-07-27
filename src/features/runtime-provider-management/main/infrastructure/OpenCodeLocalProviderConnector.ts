@@ -24,7 +24,7 @@ import {
 import { readResponseTextWithLimit } from './boundedResponseBody';
 import { buildOllamaNativeUrl, parseOllamaShowMetadata } from './ollamaRuntimeApi';
 import {
-  buildRemoteProviderListEntry,
+  buildDeferredProviderListEntry,
   isPathInside,
   LocalProviderOperationError,
   normalizeOptionalProviderApiKey,
@@ -142,7 +142,6 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
           providers: [],
         };
       }
-
       const configTree = parseConfigTree(configTarget.raw);
       const providerRootNode = findNodeAtLocation(configTree, ['provider']);
       if (providerRootNode && providerRootNode.type !== 'object') {
@@ -156,14 +155,11 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
         ? readObjectEntries(providerRootNode)
             .map(({ key: providerId, value: providerNode }) => {
               if (providerNode.type !== 'object') return null;
-              const npm = readStringNode(
-                findNodeAtLocation(configTree, ['provider', providerId, 'npm'])
-              );
+              const npm = readStringNode(findNodeAtLocation(providerNode, ['npm']));
               const rawBaseUrl = readStringNode(
-                findNodeAtLocation(configTree, ['provider', providerId, 'options', 'baseURL'])
+                findNodeAtLocation(providerNode, ['options', 'baseURL'])
               );
               if (npm !== '@ai-sdk/openai-compatible' || !rawBaseUrl) return null;
-
               let target: ReturnType<typeof normalizeRuntimeLocalProviderTarget>;
               try {
                 target = normalizeRuntimeLocalProviderTarget({
@@ -176,7 +172,9 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
               }
               const preset = resolveConfiguredProviderPreset(providerId, target.baseUrl);
               if (!preset) return null;
-
+              const hasConfiguredApiKey = Boolean(
+                readStringNode(findNodeAtLocation(providerNode, ['options', 'apiKey']))
+              );
               const modelsNode = findNodeAtLocation(configTree, ['provider', providerId, 'models']);
               const configuredModelIds =
                 modelsNode?.type === 'object'
@@ -193,6 +191,7 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
                 preset,
                 providerId: target.providerId,
                 baseUrl: target.baseUrl,
+                hasConfiguredApiKey,
                 configuredModelIds,
                 configuredDefaultModelId,
                 isDefault,
@@ -204,11 +203,10 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
                 requestedProviderId === null || provider.providerId === requestedProviderId
             )
         : [];
-
       const providers = await Promise.all(
         configuredProviders.map(async (configured): Promise<RuntimeLocalProviderListEntryDto> => {
-          const remoteEntry = buildRemoteProviderListEntry(configured);
-          if (remoteEntry) return remoteEntry;
+          const deferredEntry = buildDeferredProviderListEntry(configured);
+          if (deferredEntry) return deferredEntry;
           const probe = await this.probeTarget(
             {
               preset: configured.preset,
@@ -224,6 +222,7 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
             preset: configured.preset,
             providerId: configured.providerId,
             baseUrl: configured.baseUrl,
+            hasConfiguredApiKey: false,
             configuredModelIds: configured.configuredModelIds,
             defaultModelId: liveDefaultStillAvailable
               ? configured.configuredDefaultModelId
@@ -335,7 +334,7 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
       if (!modelIds.includes(defaultModelId)) {
         throw new LocalProviderOperationError(
           'invalid-input',
-          'The selected model is no longer reported by the local server.'
+          'The selected model is no longer reported by the endpoint.'
         );
       }
 

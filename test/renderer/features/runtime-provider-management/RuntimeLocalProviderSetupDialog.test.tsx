@@ -565,6 +565,114 @@ describe('RuntimeLocalProviderSetupDialog', () => {
     ).not.toBeNull();
   });
 
+  it('requires the stored key to be re-entered before editing a protected endpoint', async () => {
+    mocks.listLocalProviders.mockResolvedValue({
+      schemaVersion: 1,
+      runtimeId: 'opencode',
+      scope: 'global',
+      configPath: '/Users/test/.config/opencode/opencode.json',
+      providers: [
+        {
+          preset: {
+            id: 'custom' as const,
+            providerId: 'local',
+            displayName: 'Custom OpenAI-compatible server',
+            defaultBaseUrl: 'http://127.0.0.1:8080/v1',
+            description: 'Connect a compatible endpoint.',
+            scannable: false,
+          },
+          providerId: 'omniroute',
+          baseUrl: 'https://models.example.com/v1',
+          hasConfiguredApiKey: true,
+          configuredModelIds: ['team-model'],
+          defaultModelId: 'team-model',
+          isDefault: true,
+          state: 'available' as const,
+          liveModels: [{ id: 'team-model', displayName: 'team-model' }],
+          latencyMs: null,
+          message: 'Remote endpoint configured.',
+        },
+      ],
+    });
+    mocks.probeLocalProvider.mockResolvedValue({
+      schemaVersion: 1,
+      runtimeId: 'opencode',
+      probe: {
+        preset: {
+          id: 'custom' as const,
+          providerId: 'local',
+          displayName: 'Custom OpenAI-compatible server',
+          defaultBaseUrl: 'http://127.0.0.1:8080/v1',
+          description: 'Connect a compatible endpoint.',
+          scannable: false,
+        },
+        providerId: 'omniroute',
+        baseUrl: 'https://models.example.com/v1',
+        state: 'available' as const,
+        models: [{ id: 'team-model', displayName: 'team-model' }],
+        latencyMs: 25,
+        message: 'Connected.',
+      },
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    await act(async () => {
+      root.render(
+        <RuntimeLocalProviderSetupDialog
+          open
+          onOpenChange={vi.fn()}
+          projectPath="/tmp/sandbox"
+          projects={[]}
+          onProjectPathChange={vi.fn()}
+          onConfigured={vi.fn()}
+        />
+      );
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(host.textContent).toContain('Configured providers'));
+
+    const editButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Edit'
+    );
+    await act(async () => {
+      editButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(host.textContent).toContain(
+      'This endpoint has a stored key. Re-enter it to verify and save changes.'
+    );
+    const saveButton = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Save & verify')
+    );
+    const testButton = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Refresh models')
+    );
+    expect(saveButton?.disabled).toBe(true);
+    expect(testButton?.disabled).toBe(true);
+
+    const apiKeyInput = host.querySelector<HTMLInputElement>('#runtime-local-provider-api-key');
+    expect(apiKeyInput).not.toBeNull();
+    await act(async () => {
+      if (apiKeyInput) setInputValue(apiKeyInput, 'replacement-secret');
+      await Promise.resolve();
+    });
+    const enabledTestButton = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Test connection')
+    );
+    expect(enabledTestButton?.disabled).toBe(false);
+    await act(async () => {
+      enabledTestButton?.click();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(saveButton?.disabled).toBe(false));
+    expect(mocks.probeLocalProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: 'replacement-secret' })
+    );
+  });
+
   it('does not let a deleted project proceed to configuration', async () => {
     const host = document.createElement('div');
     document.body.appendChild(host);

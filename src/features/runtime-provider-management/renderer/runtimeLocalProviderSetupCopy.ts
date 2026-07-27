@@ -1,4 +1,7 @@
+import { isRuntimeLocalProviderLoopbackUrl } from '../core/domain';
+
 import type {
+  RuntimeLocalProviderListEntryDto,
   RuntimeLocalProviderPresetIdDto,
   RuntimeProviderManagementErrorCodeDto,
 } from '../contracts';
@@ -12,6 +15,48 @@ export const SERVER_START_GUIDANCE: Record<RuntimeLocalProviderPresetIdDto, stri
   custom:
     'Start an OpenAI-compatible API with a working /v1/models endpoint. Remote endpoints must use HTTPS.',
 };
+
+export function getEndpointAvailabilitySummary(total: number, available: number): string {
+  if (total === 0) return '';
+  if (available === 0) {
+    return `${total} endpoint${total === 1 ? '' : 's'} configured, but unavailable. Check the server before launching a team.`;
+  }
+  if (available === total) {
+    return `${available} endpoint${available === 1 ? '' : 's'} configured and available for model selection.`;
+  }
+  return `${available} of ${total} endpoints available. Unavailable endpoints remain configured but cannot launch.`;
+}
+
+export function getProjectConfigPath(projectPath: string): string {
+  const separator = projectPath.includes('\\') && !projectPath.includes('/') ? '\\' : '/';
+  return `${projectPath.replace(/[/\\]+$/, '')}${separator}opencode.json`;
+}
+
+export function splitConfigPath(configPath: string): { directory: string; filename: string } {
+  const separatorIndex = Math.max(configPath.lastIndexOf('/'), configPath.lastIndexOf('\\'));
+  return separatorIndex < 0
+    ? { directory: '', filename: configPath }
+    : {
+        directory: configPath.slice(0, separatorIndex + 1),
+        filename: configPath.slice(separatorIndex + 1),
+      };
+}
+
+export function hasConfiguredProviderApiKey(
+  providers: readonly RuntimeLocalProviderListEntryDto[],
+  providerId: string | null
+): boolean {
+  return Boolean(
+    providerId && providers.find((entry) => entry.providerId === providerId)?.hasConfiguredApiKey
+  );
+}
+
+export function getEndpointStatusLabel(entry: RuntimeLocalProviderListEntryDto): string {
+  if (entry.state !== 'available') return 'Unavailable';
+  return !isRuntimeLocalProviderLoopbackUrl(entry.baseUrl) || entry.hasConfiguredApiKey
+    ? 'Configured'
+    : 'Running';
+}
 
 export function getFriendlyVerificationError(
   errorCode: RuntimeProviderManagementErrorCodeDto,
@@ -27,9 +72,9 @@ export function getFriendlyVerificationError(
       return `${serverName} is saved, but OpenCode could not load this provider. Reopen provider settings, then retry.`;
     case 'auth-required':
     case 'auth-failed':
-      return `${serverName} rejected the request. Check the local server access settings, then retry.`;
+      return `${serverName} rejected the request. Check the endpoint access or API key settings, then retry.`;
     case 'model-missing':
-      return `The selected model is no longer available in ${serverName}. Load it again, refresh models, then retry.`;
+      return `The selected model is no longer available on ${serverName}. Refresh the model list and choose another, then retry.`;
     case 'model-test-failed':
       return `OpenCode could not get a response from ${serverName}. Make sure the server and selected model are running, then retry.`;
     default:

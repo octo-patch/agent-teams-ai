@@ -42,13 +42,18 @@ import {
   Server,
 } from 'lucide-react';
 
-import { isRuntimeLocalProviderLoopbackUrl, RUNTIME_LOCAL_PROVIDER_PRESETS } from '../core/domain';
+import { RUNTIME_LOCAL_PROVIDER_PRESETS } from '../core/domain';
 
 import { LocalProviderBrandIcon } from './ui/LocalProviderBrandIcon';
 import { RuntimeProviderEndpointCredentialsFields } from './ui/RuntimeProviderEndpointCredentialsFields';
 import {
+  getEndpointAvailabilitySummary,
+  getEndpointStatusLabel,
   getFriendlyVerificationError,
+  getProjectConfigPath,
+  hasConfiguredProviderApiKey,
   SERVER_START_GUIDANCE,
+  splitConfigPath,
 } from './runtimeLocalProviderSetupCopy';
 
 import type {
@@ -71,21 +76,6 @@ interface SetupErrorState {
 
 const getProjectName = (projectPath: string): string =>
   projectPath.split(/[/\\]/).filter(Boolean).pop() ?? projectPath;
-
-const getProjectConfigPath = (projectPath: string): string => {
-  const separator = projectPath.includes('\\') && !projectPath.includes('/') ? '\\' : '/';
-  return `${projectPath.replace(/[/\\]+$/, '')}${separator}opencode.json`;
-};
-
-const splitConfigPath = (configPath: string): { directory: string; filename: string } => {
-  const separatorIndex = Math.max(configPath.lastIndexOf('/'), configPath.lastIndexOf('\\'));
-  return separatorIndex < 0
-    ? { directory: '', filename: configPath }
-    : {
-        directory: configPath.slice(0, separatorIndex + 1),
-        filename: configPath.slice(separatorIndex + 1),
-      };
-};
 
 const getLocalModelVerificationCwd = (
   configuration: RuntimeLocalProviderConfigurationDto,
@@ -399,7 +389,14 @@ export const RuntimeLocalProviderSetupDialog = ({
   const serverConnected = probe?.state === 'available';
   const serverHasModels = serverConnected && (probe?.models.length ?? 0) > 0;
   const scopeProgressComplete = serverConnected && availabilityComplete;
-  const readyToSave = Boolean(availabilityComplete && selectedModelId && serverHasModels);
+  const editingProviderHasConfiguredApiKey = hasConfiguredProviderApiKey(
+    configuredProviders,
+    editingProviderId
+  );
+  const apiKeyRequiredForEdit = editingProviderHasConfiguredApiKey && !apiKey.trim();
+  const readyToSave = Boolean(
+    availabilityComplete && selectedModelId && serverHasModels && !apiKeyRequiredForEdit
+  );
 
   const showProviderView = useCallback((view: ProviderView): void => {
     providerViewRef.current = view;
@@ -484,6 +481,7 @@ export const RuntimeLocalProviderSetupDialog = ({
       return 'Your local model is ready for Agent Teams launch.';
     }
     if (scanLoading) return 'Looking for local model servers on this computer...';
+    if (apiKeyRequiredForEdit) return 'Re-enter the stored API key to verify and save changes.';
     if (!serverConnected) {
       return `Start ${selectedPreset.displayName}, then test the connection.`;
     }
@@ -511,6 +509,7 @@ export const RuntimeLocalProviderSetupDialog = ({
     serverHasModels,
     verificationError,
     verificationPassed,
+    apiKeyRequiredForEdit,
   ]);
 
   useEffect(() => {
@@ -765,7 +764,7 @@ export const RuntimeLocalProviderSetupDialog = ({
             ? getFriendlyVerificationError(verification.error.code, selectedPreset.displayName)
             : verification.result?.message && verification.result.message.length <= 240
               ? verification.result.message
-              : 'OpenCode could not complete a model request. Check the local server, then retry.'
+              : 'OpenCode could not complete a model request. Check the endpoint, then retry.'
         );
         return;
       }
@@ -832,6 +831,7 @@ export const RuntimeLocalProviderSetupDialog = ({
           preset: selectedPreset,
           providerId: configuration.providerId,
           baseUrl: configuration.baseUrl,
+          hasConfiguredApiKey: Boolean(apiKey.trim()),
           configuredModelIds: configuration.modelIds,
           defaultModelId: configuration.defaultModelId,
           isDefault: setAsDefault,
@@ -1058,11 +1058,10 @@ export const RuntimeLocalProviderSetupDialog = ({
                         ? configurationScope === 'global'
                           ? 'No model endpoints are available to all projects yet.'
                           : 'No model endpoints have been added to this project yet.'
-                        : runningProviderCount === 0
-                          ? `${configuredProviders.length} endpoint${configuredProviders.length === 1 ? '' : 's'} configured, but unavailable. Check the server before launching a team.`
-                          : runningProviderCount === configuredProviders.length
-                            ? `${runningProviderCount} endpoint${runningProviderCount === 1 ? '' : 's'} configured and available for model selection.`
-                            : `${runningProviderCount} of ${configuredProviders.length} endpoints available. Unavailable endpoints remain configured but cannot launch.`}
+                        : getEndpointAvailabilitySummary(
+                            configuredProviders.length,
+                            runningProviderCount
+                          )}
                     </p>
                   </div>
                   <Button
@@ -1086,7 +1085,6 @@ export const RuntimeLocalProviderSetupDialog = ({
                 ) : configuredProviders.length > 0 ? (
                   <div className="divide-y divide-white/[0.07] border-t border-white/[0.07]">
                     {configuredProviders.map((entry) => {
-                      const remote = !isRuntimeLocalProviderLoopbackUrl(entry.baseUrl);
                       return (
                         <div
                           key={entry.providerId}
@@ -1115,11 +1113,7 @@ export const RuntimeLocalProviderSetupDialog = ({
                                     entry.state === 'available' ? 'bg-emerald-400' : 'bg-amber-300'
                                   }`}
                                 />
-                                {entry.state === 'available'
-                                  ? remote
-                                    ? 'Configured'
-                                    : 'Running'
-                                  : 'Unavailable'}
+                                {getEndpointStatusLabel(entry)}
                               </span>
                               {entry.isDefault ? (
                                 <span className="rounded-full bg-indigo-400/10 px-2 py-0.5 text-[9px] font-medium text-indigo-200">
@@ -1279,7 +1273,7 @@ export const RuntimeLocalProviderSetupDialog = ({
                           type="button"
                           variant="outline"
                           className="shrink-0"
-                          disabled={setupLocked || !baseUrl.trim()}
+                          disabled={setupLocked || !baseUrl.trim() || apiKeyRequiredForEdit}
                           onClick={() => void testConnection()}
                         >
                           {phase === 'probing' ? (
@@ -1302,10 +1296,11 @@ export const RuntimeLocalProviderSetupDialog = ({
                     </div>
                   </div>
 
-                  {selectedPresetId === 'custom' ? (
+                  {selectedPresetId === 'custom' || editingProviderHasConfiguredApiKey ? (
                     <RuntimeProviderEndpointCredentialsFields
                       providerId={providerId}
                       apiKey={apiKey}
+                      hasConfiguredApiKey={editingProviderHasConfiguredApiKey}
                       disabled={setupLocked}
                       onProviderIdChange={setProviderId}
                       onApiKeyChange={setApiKey}

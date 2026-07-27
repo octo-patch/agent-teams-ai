@@ -27,6 +27,7 @@ interface ConfiguredProviderSnapshot {
   readonly preset: RuntimeLocalProviderPresetDto;
   readonly providerId: string;
   readonly baseUrl: string;
+  readonly hasConfiguredApiKey: boolean;
   readonly configuredModelIds: readonly string[];
   readonly configuredDefaultModelId: string | null;
   readonly isDefault: boolean;
@@ -70,10 +71,11 @@ export function resolveConfiguredProviderPreset(
   );
 }
 
-export function buildRemoteProviderListEntry(
+export function buildDeferredProviderListEntry(
   configured: ConfiguredProviderSnapshot
 ): RuntimeLocalProviderListEntryDto | null {
-  if (isRuntimeLocalProviderLoopbackUrl(configured.baseUrl)) return null;
+  const remote = !isRuntimeLocalProviderLoopbackUrl(configured.baseUrl);
+  if (!remote && !configured.hasConfiguredApiKey) return null;
   const configuredModels = configured.configuredModelIds.map((modelId) => ({
     id: modelId,
     displayName: modelId,
@@ -82,14 +84,14 @@ export function buildRemoteProviderListEntry(
     preset: configured.preset,
     providerId: configured.providerId,
     baseUrl: configured.baseUrl,
+    hasConfiguredApiKey: configured.hasConfiguredApiKey,
     configuredModelIds: configured.configuredModelIds,
     defaultModelId: configured.configuredDefaultModelId ?? configured.configuredModelIds[0] ?? null,
     isDefault: configured.isDefault,
     state: 'available',
     liveModels: configuredModels,
     latencyMs: null,
-    message:
-      'Remote endpoint configured. OpenCode verifies connectivity and authentication before launch.',
+    message: `${remote ? 'Remote endpoint' : 'Credential-backed endpoint'} configured. OpenCode verifies connectivity and authentication before launch.`,
   };
 }
 
@@ -174,7 +176,7 @@ export async function writeProviderApiKeyReference(input: {
     durability: 'strict',
     syncDirectory: true,
   });
-  return `{file:~/.config/opencode/agent-teams-credentials/${filename}}`;
+  return `{file:~/${PROVIDER_CREDENTIAL_DIRECTORY_SEGMENTS.join('/')}/${filename}}`;
 }
 
 export function isPathInside(rootPath: string, targetPath: string): boolean {

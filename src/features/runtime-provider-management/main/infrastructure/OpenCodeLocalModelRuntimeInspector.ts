@@ -155,7 +155,8 @@ export async function inspectOpenCodeLocalModelRuntimeReadiness(
     );
 
   if (provider.preset.id !== 'ollama') {
-    if (!isRuntimeLocalProviderLoopbackUrl(provider.baseUrl)) {
+    const remote = !isRuntimeLocalProviderLoopbackUrl(provider.baseUrl);
+    if (remote || provider.hasConfiguredApiKey) {
       return {
         providerId: parsed.sourceId,
         modelId: parsed.modelId,
@@ -169,8 +170,8 @@ export async function inspectOpenCodeLocalModelRuntimeReadiness(
         severity: 'warning',
         code: 'local_runtime_unverified',
         message:
-          `${provider.preset.displayName} is a remote endpoint. Agent Teams does not send ` +
-          'credentials through its direct coordination probe; the OpenCode execution probe is authoritative.',
+          `${provider.preset.displayName} is ${remote ? 'a remote endpoint' : 'configured with an API key'}. ` +
+          'Agent Teams does not send credentials through its direct coordination probe; the OpenCode execution probe is authoritative.',
       };
     }
     const coordination = await probeCoordinationReliably();

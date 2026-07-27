@@ -153,6 +153,49 @@ describe('OpenCodeLocalProviderConnector local provider list', () => {
     ]);
   });
 
+  it('defers a credential-backed loopback endpoint to OpenCode instead of probing without its key', async () => {
+    const projectPath = path.join(tempDir, 'credential-loopback-project');
+    await fs.mkdir(projectPath, { recursive: true });
+    await fs.writeFile(
+      path.join(projectPath, 'opencode.json'),
+      JSON.stringify({
+        provider: {
+          'local-secure': {
+            npm: '@ai-sdk/openai-compatible',
+            options: {
+              baseURL: 'http://127.0.0.1:18080/v1',
+              apiKey: '{file:~/.config/opencode/agent-teams-credentials/local-secure.key}',
+            },
+            models: { 'team-model': {} },
+          },
+        },
+      }),
+      'utf8'
+    );
+    const connector = new OpenCodeLocalProviderConnector({
+      fetchImpl: (async () => {
+        throw new Error('Credential-backed providers must not be fetched without their key.');
+      }) as typeof fetch,
+    });
+
+    const response = await connector.listLocalProviders({
+      runtimeId: 'opencode',
+      scope: 'project',
+      projectPath,
+    });
+
+    expect(response.error).toBeUndefined();
+    expect(response.providers).toEqual([
+      expect.objectContaining({
+        providerId: 'local-secure',
+        hasConfiguredApiKey: true,
+        state: 'available',
+        liveModels: [{ id: 'team-model', displayName: 'team-model' }],
+        message: expect.stringContaining('Credential-backed endpoint'),
+      }),
+    ]);
+  });
+
   it('filters by provider id before probing so custom local detection stays cheap', async () => {
     const projectPath = path.join(tempDir, 'filtered-project');
     await fs.mkdir(projectPath, { recursive: true });

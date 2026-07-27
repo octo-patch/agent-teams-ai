@@ -645,6 +645,7 @@ export interface RuntimeLocalProviderListEntryDto {
   preset: RuntimeLocalProviderPresetDto;
   providerId: string;
   baseUrl: string;
+  hasConfiguredApiKey?: boolean;
   configuredModelIds: readonly string[];
   defaultModelId: string | null;
   isDefault: boolean;
