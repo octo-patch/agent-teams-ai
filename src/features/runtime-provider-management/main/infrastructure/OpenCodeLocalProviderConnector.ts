@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -16,14 +15,22 @@ import {
 
 import {
   buildRuntimeLocalProviderModelRoute,
-  isRuntimeLocalProviderLoopbackUrl,
   normalizeRuntimeLocalProviderModelId,
   normalizeRuntimeLocalProviderTarget,
   RUNTIME_LOCAL_PROVIDER_PRESETS,
   RuntimeLocalProviderValidationError,
 } from '../../core/domain';
 
+import { readResponseTextWithLimit } from './boundedResponseBody';
 import { buildOllamaNativeUrl, parseOllamaShowMetadata } from './ollamaRuntimeApi';
+import {
+  buildRemoteProviderListEntry,
+  isPathInside,
+  LocalProviderOperationError,
+  normalizeOptionalProviderApiKey,
+  resolveConfiguredProviderPreset,
+  writeProviderApiKeyReference,
+} from './OpenCodeLocalProviderSupport';
 
 import type {
   RuntimeLocalProviderConfigureInput,
@@ -48,7 +55,6 @@ const MODEL_METADATA_TIMEOUT_MS = 3_000;
 const DEFAULT_LOCAL_MODEL_OUTPUT_TOKENS = 4_096;
 const MAX_MODELS = 500;
 const MAX_RESPONSE_BYTES = 1_048_576;
-const MAX_API_KEY_LENGTH = 8_192;
 const PROVIDER_ID_FILTER_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const CONFIG_CANDIDATES = [
   'opencode.json',
@@ -57,11 +63,6 @@ const CONFIG_CANDIDATES = [
   '.opencode/opencode.jsonc',
 ] as const;
 const GLOBAL_CONFIG_FILENAMES = ['opencode.json', 'opencode.jsonc'] as const;
-const PROVIDER_CREDENTIAL_DIRECTORY_SEGMENTS = [
-  '.config',
-  'opencode',
-  'agent-teams-credentials',
-] as const;
 const JSON_FORMATTING: FormattingOptions = {
   insertSpaces: true,
   tabSize: 2,
@@ -98,17 +99,6 @@ interface LocalModelConfigMetadata {
     readonly context: number;
     readonly output: number;
   };
-}
-
-class LocalProviderOperationError extends Error {
-  constructor(
-    readonly code: RuntimeLocalProviderErrorCodeDto,
-    message: string,
-    readonly recoverable = true
-  ) {
-    super(message);
-    this.name = 'LocalProviderOperationError';
-  }
 }
 
 export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConnectorPort {
@@ -184,14 +174,7 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
               } catch {
                 return null;
               }
-              const customPreset = RUNTIME_LOCAL_PROVIDER_PRESETS.find(
-                (candidate) => candidate.id === 'custom'
-              );
-              const preset = !isRuntimeLocalProviderLoopbackUrl(target.baseUrl)
-                ? customPreset
-                : (RUNTIME_LOCAL_PROVIDER_PRESETS.find(
-                    (candidate) => candidate.providerId === providerId
-                  ) ?? customPreset);
+              const preset = resolveConfiguredProviderPreset(providerId, target.baseUrl);
               if (!preset) return null;
 
               const modelsNode = findNodeAtLocation(configTree, ['provider', providerId, 'models']);
@@ -224,26 +207,8 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
 
       const providers = await Promise.all(
         configuredProviders.map(async (configured): Promise<RuntimeLocalProviderListEntryDto> => {
-          if (!isRuntimeLocalProviderLoopbackUrl(configured.baseUrl)) {
-            const configuredModels = configured.configuredModelIds.map((modelId) => ({
-              id: modelId,
-              displayName: modelId,
-            }));
-            return {
-              preset: configured.preset,
-              providerId: configured.providerId,
-              baseUrl: configured.baseUrl,
-              configuredModelIds: configured.configuredModelIds,
-              defaultModelId:
-                configured.configuredDefaultModelId ?? configured.configuredModelIds[0] ?? null,
-              isDefault: configured.isDefault,
-              state: 'available',
-              liveModels: configuredModels,
-              latencyMs: null,
-              message:
-                'Remote endpoint configured. OpenCode verifies connectivity and authentication before launch.',
-            };
-          }
+          const remoteEntry = buildRemoteProviderListEntry(configured);
+          if (remoteEntry) return remoteEntry;
           const probe = await this.probeTarget(
             {
               preset: configured.preset,
@@ -320,7 +285,7 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
     }
     try {
       const target = normalizeRuntimeLocalProviderTarget(input);
-      const apiKey = normalizeOptionalApiKey(input.apiKey);
+      const apiKey = normalizeOptionalProviderApiKey(input.apiKey);
       return {
         schemaVersion: 1,
         runtimeId: 'opencode',
@@ -350,7 +315,7 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
     }
     try {
       const target = normalizeRuntimeLocalProviderTarget(input);
-      const apiKey = normalizeOptionalApiKey(input.apiKey);
+      const apiKey = normalizeOptionalProviderApiKey(input.apiKey);
       const defaultModelId = normalizeRuntimeLocalProviderModelId(input.defaultModelId);
       if (!defaultModelId) {
         throw new LocalProviderOperationError('invalid-input', 'Choose a valid local model.');
@@ -684,7 +649,12 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
       );
     }
     const apiKeyReference = input.apiKey
-      ? await this.writeProviderApiKey(configPath, input.providerId, input.apiKey)
+      ? await writeProviderApiKeyReference({
+          homePath: this.homePath,
+          configPath,
+          providerId: input.providerId,
+          apiKey: input.apiKey,
+        })
       : null;
 
     let nextRaw = raw;
@@ -768,89 +738,6 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
       mode: configTarget.mode ?? 0o600,
     });
     return configPath;
-  }
-
-  private async writeProviderApiKey(
-    configPath: string,
-    providerId: string,
-    apiKey: string
-  ): Promise<string> {
-    let realHomePath: string;
-    try {
-      const homeStat = await fs.stat(this.homePath);
-      if (!homeStat.isDirectory()) throw new Error('not-directory');
-      realHomePath = await fs.realpath(this.homePath);
-    } catch {
-      throw new LocalProviderOperationError(
-        'write-failed',
-        'The user home directory is not available for provider credential storage.'
-      );
-    }
-
-    let credentialDirectory = realHomePath;
-    for (const segment of PROVIDER_CREDENTIAL_DIRECTORY_SEGMENTS) {
-      credentialDirectory = path.join(credentialDirectory, segment);
-      try {
-        const stat = await fs.lstat(credentialDirectory);
-        if (stat.isSymbolicLink() || !stat.isDirectory()) {
-          throw new LocalProviderOperationError(
-            'config-conflict',
-            'The provider credential directory must be a regular directory.'
-          );
-        }
-      } catch (error) {
-        if (error instanceof LocalProviderOperationError) throw error;
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-          throw new LocalProviderOperationError(
-            'write-failed',
-            'Could not inspect the provider credential directory.'
-          );
-        }
-        await fs.mkdir(credentialDirectory, { mode: 0o700 });
-      }
-    }
-
-    const realCredentialDirectory = await fs.realpath(credentialDirectory);
-    if (!isPathInside(realHomePath, realCredentialDirectory)) {
-      throw new LocalProviderOperationError(
-        'config-conflict',
-        'The provider credential directory resolves outside the user home directory.'
-      );
-    }
-    if (process.platform !== 'win32') {
-      await fs.chmod(realCredentialDirectory, 0o700);
-    }
-
-    const scopeHash = createHash('sha256')
-      .update(path.resolve(configPath))
-      .digest('hex')
-      .slice(0, 16);
-    const filename = `${providerId}-${scopeHash}.key`;
-    const credentialPath = path.join(realCredentialDirectory, filename);
-    try {
-      const existing = await fs.lstat(credentialPath);
-      if (existing.isSymbolicLink() || !existing.isFile()) {
-        throw new LocalProviderOperationError(
-          'config-conflict',
-          'The provider credential path must be a regular file.'
-        );
-      }
-    } catch (error) {
-      if (error instanceof LocalProviderOperationError) throw error;
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw new LocalProviderOperationError(
-          'write-failed',
-          'Could not inspect the provider credential file.'
-        );
-      }
-    }
-
-    await atomicWriteAsync(credentialPath, apiKey, {
-      mode: 0o600,
-      durability: 'strict',
-      syncDirectory: true,
-    });
-    return `{file:~/.config/opencode/agent-teams-credentials/${filename}}`;
   }
 
   private readConfigTarget(
@@ -1061,19 +948,6 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
   }
 }
 
-function normalizeOptionalApiKey(value: string | null | undefined): string | null {
-  const apiKey = value?.trim() ?? '';
-  if (!apiKey) return null;
-  const containsInvalidCharacter = [...apiKey].some((character) => {
-    const codePoint = character.codePointAt(0) ?? 0;
-    return codePoint === 0 || codePoint === 10 || codePoint === 13;
-  });
-  if (apiKey.length > MAX_API_KEY_LENGTH || containsInvalidCharacter) {
-    throw new RuntimeLocalProviderValidationError('API key is invalid.');
-  }
-  return apiKey;
-}
-
 function readOpenAiModels(raw: string): RuntimeLocalProviderModelDto[] {
   let parsed: unknown;
   try {
@@ -1134,36 +1008,6 @@ function readObjectEntries(node: JsoncNode): Array<{ key: string; value: JsoncNo
   });
 }
 
-async function readResponseTextWithLimit(
-  response: Response,
-  maxBytes: number
-): Promise<string | null> {
-  const reader = response.body?.getReader();
-  if (!reader) {
-    const raw = await response.text();
-    return Buffer.byteLength(raw, 'utf8') <= maxBytes ? raw : null;
-  }
-
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        return Buffer.concat(chunks, totalBytes).toString('utf8');
-      }
-      totalBytes += chunk.value.byteLength;
-      if (totalBytes > maxBytes) {
-        await reader.cancel();
-        return null;
-      }
-      chunks.push(Buffer.from(chunk.value));
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
 function setJsoncValue(raw: string, pathSegments: (string | number)[], value: unknown): string {
   return applyEdits(raw, modify(raw, pathSegments, value, { formattingOptions: JSON_FORMATTING }));
 }
@@ -1211,14 +1055,4 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isPathInside(rootPath: string, targetPath: string): boolean {
-  const relativePath = path.relative(rootPath, targetPath);
-  return (
-    relativePath === '' ||
-    (!relativePath.startsWith(`..${path.sep}`) &&
-      relativePath !== '..' &&
-      !path.isAbsolute(relativePath))
-  );
 }

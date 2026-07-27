@@ -1,0 +1,188 @@
+import { createHash } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
+
+import { atomicWriteAsync } from '@main/utils/atomicWrite';
+
+import {
+  isRuntimeLocalProviderLoopbackUrl,
+  RUNTIME_LOCAL_PROVIDER_PRESETS,
+  RuntimeLocalProviderValidationError,
+} from '../../core/domain';
+
+import type {
+  RuntimeLocalProviderErrorCodeDto,
+  RuntimeLocalProviderListEntryDto,
+  RuntimeLocalProviderPresetDto,
+} from '../../contracts';
+
+const MAX_API_KEY_LENGTH = 8_192;
+const PROVIDER_CREDENTIAL_DIRECTORY_SEGMENTS = [
+  '.config',
+  'opencode',
+  'agent-teams-credentials',
+] as const;
+
+interface ConfiguredProviderSnapshot {
+  readonly preset: RuntimeLocalProviderPresetDto;
+  readonly providerId: string;
+  readonly baseUrl: string;
+  readonly configuredModelIds: readonly string[];
+  readonly configuredDefaultModelId: string | null;
+  readonly isDefault: boolean;
+}
+
+export class LocalProviderOperationError extends Error {
+  constructor(
+    readonly code: RuntimeLocalProviderErrorCodeDto,
+    message: string,
+    readonly recoverable = true
+  ) {
+    super(message);
+    this.name = 'LocalProviderOperationError';
+  }
+}
+
+export function normalizeOptionalProviderApiKey(value: string | null | undefined): string | null {
+  const apiKey = value?.trim() ?? '';
+  if (!apiKey) return null;
+  const containsInvalidCharacter = [...apiKey].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint === 0 || codePoint === 10 || codePoint === 13;
+  });
+  if (apiKey.length > MAX_API_KEY_LENGTH || containsInvalidCharacter) {
+    throw new RuntimeLocalProviderValidationError('API key is invalid.');
+  }
+  return apiKey;
+}
+
+export function resolveConfiguredProviderPreset(
+  providerId: string,
+  baseUrl: string
+): RuntimeLocalProviderPresetDto | undefined {
+  const customPreset = RUNTIME_LOCAL_PROVIDER_PRESETS.find(
+    (candidate) => candidate.id === 'custom'
+  );
+  if (!isRuntimeLocalProviderLoopbackUrl(baseUrl)) return customPreset;
+  return (
+    RUNTIME_LOCAL_PROVIDER_PRESETS.find((candidate) => candidate.providerId === providerId) ??
+    customPreset
+  );
+}
+
+export function buildRemoteProviderListEntry(
+  configured: ConfiguredProviderSnapshot
+): RuntimeLocalProviderListEntryDto | null {
+  if (isRuntimeLocalProviderLoopbackUrl(configured.baseUrl)) return null;
+  const configuredModels = configured.configuredModelIds.map((modelId) => ({
+    id: modelId,
+    displayName: modelId,
+  }));
+  return {
+    preset: configured.preset,
+    providerId: configured.providerId,
+    baseUrl: configured.baseUrl,
+    configuredModelIds: configured.configuredModelIds,
+    defaultModelId: configured.configuredDefaultModelId ?? configured.configuredModelIds[0] ?? null,
+    isDefault: configured.isDefault,
+    state: 'available',
+    liveModels: configuredModels,
+    latencyMs: null,
+    message:
+      'Remote endpoint configured. OpenCode verifies connectivity and authentication before launch.',
+  };
+}
+
+export async function writeProviderApiKeyReference(input: {
+  readonly homePath: string;
+  readonly configPath: string;
+  readonly providerId: string;
+  readonly apiKey: string;
+}): Promise<string> {
+  let realHomePath: string;
+  try {
+    const homeStat = await fs.stat(input.homePath);
+    if (!homeStat.isDirectory()) throw new Error('not-directory');
+    realHomePath = await fs.realpath(input.homePath);
+  } catch {
+    throw new LocalProviderOperationError(
+      'write-failed',
+      'The user home directory is not available for provider credential storage.'
+    );
+  }
+
+  let credentialDirectory = realHomePath;
+  for (const segment of PROVIDER_CREDENTIAL_DIRECTORY_SEGMENTS) {
+    credentialDirectory = path.join(credentialDirectory, segment);
+    try {
+      const stat = await fs.lstat(credentialDirectory);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new LocalProviderOperationError(
+          'config-conflict',
+          'The provider credential directory must be a regular directory.'
+        );
+      }
+    } catch (error) {
+      if (error instanceof LocalProviderOperationError) throw error;
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new LocalProviderOperationError(
+          'write-failed',
+          'Could not inspect the provider credential directory.'
+        );
+      }
+      await fs.mkdir(credentialDirectory, { mode: 0o700 });
+    }
+  }
+
+  const realCredentialDirectory = await fs.realpath(credentialDirectory);
+  if (!isPathInside(realHomePath, realCredentialDirectory)) {
+    throw new LocalProviderOperationError(
+      'config-conflict',
+      'The provider credential directory resolves outside the user home directory.'
+    );
+  }
+  if (process.platform !== 'win32') {
+    await fs.chmod(realCredentialDirectory, 0o700);
+  }
+
+  const scopeHash = createHash('sha256')
+    .update(path.resolve(input.configPath))
+    .digest('hex')
+    .slice(0, 16);
+  const filename = `${input.providerId}-${scopeHash}.key`;
+  const credentialPath = path.join(realCredentialDirectory, filename);
+  try {
+    const existing = await fs.lstat(credentialPath);
+    if (existing.isSymbolicLink() || !existing.isFile()) {
+      throw new LocalProviderOperationError(
+        'config-conflict',
+        'The provider credential path must be a regular file.'
+      );
+    }
+  } catch (error) {
+    if (error instanceof LocalProviderOperationError) throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new LocalProviderOperationError(
+        'write-failed',
+        'Could not inspect the provider credential file.'
+      );
+    }
+  }
+
+  await atomicWriteAsync(credentialPath, input.apiKey, {
+    mode: 0o600,
+    durability: 'strict',
+    syncDirectory: true,
+  });
+  return `{file:~/.config/opencode/agent-teams-credentials/${filename}}`;
+}
+
+export function isPathInside(rootPath: string, targetPath: string): boolean {
+  const relativePath = path.relative(rootPath, targetPath);
+  return (
+    relativePath === '' ||
+    (!relativePath.startsWith(`..${path.sep}`) &&
+      relativePath !== '..' &&
+      !path.isAbsolute(relativePath))
+  );
+}

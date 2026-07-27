@@ -45,6 +45,11 @@ import {
 import { isRuntimeLocalProviderLoopbackUrl, RUNTIME_LOCAL_PROVIDER_PRESETS } from '../core/domain';
 
 import { LocalProviderBrandIcon } from './ui/LocalProviderBrandIcon';
+import { RuntimeProviderEndpointCredentialsFields } from './ui/RuntimeProviderEndpointCredentialsFields';
+import {
+  getFriendlyVerificationError,
+  SERVER_START_GUIDANCE,
+} from './runtimeLocalProviderSetupCopy';
 
 import type {
   RuntimeLocalProviderConfigurationDto,
@@ -52,21 +57,10 @@ import type {
   RuntimeLocalProviderPresetIdDto,
   RuntimeLocalProviderProbeDto,
   RuntimeLocalProviderScopeDto,
-  RuntimeProviderManagementErrorCodeDto,
 } from '../contracts';
 import type { ProjectPathProject } from '@renderer/components/team/dialogs/projectPathProjects';
 import type { ComboboxOption } from '@renderer/components/ui/combobox';
 import type { JSX, ReactNode } from 'react';
-
-const SERVER_START_GUIDANCE: Record<RuntimeLocalProviderPresetIdDto, string> = {
-  ollama:
-    'Make sure Ollama is running and at least one model has been pulled locally. Agent Teams tool use needs an effective 16K-32K context; Ollama defaults to 4K unless configured separately.',
-  'lm-studio': 'In LM Studio, load a model, open Developer > Local Server, and start the server.',
-  'atomic-chat': 'Open Atomic Chat, load a model, and start its local API server.',
-  'llama.cpp': 'Start llama-server with a model loaded. The default port for this setup is 8080.',
-  custom:
-    'Start an OpenAI-compatible API with a working /v1/models endpoint. Remote endpoints must use HTTPS.',
-};
 
 type SetupErrorScope = 'server' | 'project' | 'model' | 'setup';
 
@@ -117,30 +111,6 @@ const getLocalModelReadinessError = (
     readiness.message ||
     'The model is configured, but it is not ready for Agent Teams launch.'
   );
-};
-
-const getFriendlyVerificationError = (
-  errorCode: RuntimeProviderManagementErrorCodeDto,
-  serverName: string
-): string => {
-  switch (errorCode) {
-    case 'runtime-missing':
-      return 'OpenCode is not available yet. Install or repair OpenCode, then retry verification.';
-    case 'runtime-misconfigured':
-    case 'runtime-unhealthy':
-      return 'OpenCode is not ready to run this model. Reopen provider settings, check the OpenCode status, then retry.';
-    case 'provider-missing':
-      return `${serverName} is saved, but OpenCode could not load this provider. Reopen provider settings, then retry.`;
-    case 'auth-required':
-    case 'auth-failed':
-      return `${serverName} rejected the request. Check the local server access settings, then retry.`;
-    case 'model-missing':
-      return `The selected model is no longer available in ${serverName}. Load it again, refresh models, then retry.`;
-    case 'model-test-failed':
-      return `OpenCode could not get a response from ${serverName}. Make sure the server and selected model are running, then retry.`;
-    default:
-      return 'OpenCode could not verify the local model. Check the server, then retry.';
-  }
 };
 
 interface SetupStepProps {
@@ -1333,47 +1303,17 @@ export const RuntimeLocalProviderSetupDialog = ({
                   </div>
 
                   {selectedPresetId === 'custom' ? (
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <div className="space-y-1.5">
-                        <Label htmlFor="runtime-local-provider-id">Provider ID (advanced)</Label>
-                        <Input
-                          id="runtime-local-provider-id"
-                          value={providerId}
-                          disabled={setupLocked}
-                          placeholder="omniroute"
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          spellCheck={false}
-                          onChange={(event) => {
-                            selectionTouchedRef.current = true;
-                            setProviderId(event.currentTarget.value);
-                            resetProbe();
-                          }}
-                        />
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label htmlFor="runtime-local-provider-api-key">API key (optional)</Label>
-                        <Input
-                          id="runtime-local-provider-api-key"
-                          type="password"
-                          value={apiKey}
-                          disabled={setupLocked}
-                          placeholder="Enter one if your endpoint requires it"
-                          autoComplete="off"
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          spellCheck={false}
-                          onChange={(event) => {
-                            selectionTouchedRef.current = true;
-                            setApiKey(event.currentTarget.value);
-                            resetProbe();
-                          }}
-                        />
-                        <p className="text-[11px] text-[var(--color-text-muted)]">
-                          Stored in a private key file referenced by opencode.json.
-                        </p>
-                      </div>
-                    </div>
+                    <RuntimeProviderEndpointCredentialsFields
+                      providerId={providerId}
+                      apiKey={apiKey}
+                      disabled={setupLocked}
+                      onProviderIdChange={setProviderId}
+                      onApiKeyChange={setApiKey}
+                      onChanged={() => {
+                        selectionTouchedRef.current = true;
+                        resetProbe();
+                      }}
+                    />
                   ) : null}
 
                   <div
