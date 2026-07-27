@@ -72,6 +72,13 @@ describe('runtimeLocalProvider', () => {
         baseUrl: 'https://0.0.0.0/v1',
       })
     ).toThrow('reachable host');
+    expect(() =>
+      normalizeRuntimeLocalProviderTarget({
+        presetId: 'custom',
+        providerId: 'omniroute',
+        baseUrl: 'https://[ff02::1]/v1',
+      })
+    ).toThrow('reachable host');
   });
 
   it('rejects unsafe model identifiers', () => {

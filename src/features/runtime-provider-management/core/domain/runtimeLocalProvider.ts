@@ -186,6 +186,7 @@ function isUnusableNetworkHostname(hostname: string): boolean {
   if (normalized === '0.0.0.0' || normalized === '::' || normalized === '255.255.255.255') {
     return true;
   }
+  if (normalized.startsWith('ff') && normalized.includes(':')) return true;
   const ipv4 = parseIpv4Octets(normalized);
   return ipv4 ? ipv4[0] >= 224 : false;
 }
