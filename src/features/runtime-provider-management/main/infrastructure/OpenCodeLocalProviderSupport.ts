@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 
-import { atomicWriteAsync } from '@main/utils/atomicWrite';
+import { atomicCreateAsync, atomicWriteAsync } from '@main/utils/atomicWrite';
 import { findNodeAtLocation, type Node as JsoncNode } from 'jsonc-parser';
 
 import {
@@ -23,6 +23,7 @@ const PROVIDER_CREDENTIAL_DIRECTORY_SEGMENTS = [
   'opencode',
   'agent-teams-credentials',
 ] as const;
+const PROVIDER_CREDENTIAL_REFERENCE_PREFIX = `{file:~/${PROVIDER_CREDENTIAL_DIRECTORY_SEGMENTS.join('/')}/`;
 
 interface ConfiguredProviderSnapshot {
   readonly preset: RuntimeLocalProviderPresetDto;
@@ -96,15 +97,7 @@ export function buildDeferredProviderListEntry(
   };
 }
 
-export function buildProviderApiKeyReference(input: {
-  readonly configPath: string;
-  readonly providerId: string;
-}): string {
-  const filename = buildProviderApiKeyFilename(input);
-  return `{file:~/${PROVIDER_CREDENTIAL_DIRECTORY_SEGMENTS.join('/')}/${filename}}`;
-}
-
-function buildProviderApiKeyFilename(input: {
+export function createProviderApiKeyReference(input: {
   readonly configPath: string;
   readonly providerId: string;
 }): string {
@@ -112,7 +105,8 @@ function buildProviderApiKeyFilename(input: {
     .update(path.resolve(input.configPath))
     .digest('hex')
     .slice(0, 16);
-  return `${input.providerId}-${scopeHash}.key`;
+  const filename = `${input.providerId}-${scopeHash}-${randomUUID()}.key`;
+  return `${PROVIDER_CREDENTIAL_REFERENCE_PREFIX}${filename}}`;
 }
 
 export function readStringNode(node: JsoncNode | undefined): string | null {
@@ -121,26 +115,25 @@ export function readStringNode(node: JsoncNode | undefined): string | null {
 
 export function assertProviderApiKeyReplacement(
   configTree: JsoncNode,
-  providerId: string,
-  apiKey: string | null
-): void {
+  input: { readonly providerId: string; readonly apiKey: string | null }
+): string | null {
   const existingApiKey = readStringNode(
-    findNodeAtLocation(configTree, ['provider', providerId, 'options', 'apiKey'])
+    findNodeAtLocation(configTree, ['provider', input.providerId, 'options', 'apiKey'])
   );
-  if (apiKey || !existingApiKey?.trim()) return;
-  throw new LocalProviderOperationError(
-    'config-conflict',
-    'Enter a replacement API key before changing an existing protected provider.'
-  );
+  if (!input.apiKey && existingApiKey?.trim()) {
+    throw new LocalProviderOperationError(
+      'config-conflict',
+      'Enter a replacement API key before changing an existing protected provider.'
+    );
+  }
+  return existingApiKey;
 }
 
 export async function writeProviderApiKeyReference(input: {
   readonly homePath: string;
-  readonly configPath: string;
-  readonly providerId: string;
+  readonly apiKeyReference: string;
   readonly apiKey: string;
-  readonly beforeCommit?: () => Promise<void>;
-}): Promise<string> {
+}): Promise<{ credentialDirectory: string; credentialPath: string }> {
   let realHomePath: string;
   try {
     const homeStat = await fs.stat(input.homePath);
@@ -187,67 +180,69 @@ export async function writeProviderApiKeyReference(input: {
     await fs.chmod(realCredentialDirectory, 0o700);
   }
 
-  const apiKeyReference = buildProviderApiKeyReference(input);
-  const filename = buildProviderApiKeyFilename(input);
-  const credentialPath = path.join(realCredentialDirectory, filename);
-  try {
-    const existing = await fs.lstat(credentialPath);
-    if (existing.isSymbolicLink() || !existing.isFile()) {
-      throw new LocalProviderOperationError(
-        'config-conflict',
-        'The provider credential path must be a regular file.'
-      );
-    }
-  } catch (error) {
-    if (error instanceof LocalProviderOperationError) throw error;
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw new LocalProviderOperationError(
-        'write-failed',
-        'Could not inspect the provider credential file.'
-      );
-    }
+  const filename = parseProviderApiKeyFilename(input.apiKeyReference);
+  if (!filename) {
+    throw new LocalProviderOperationError(
+      'config-conflict',
+      'The provider credential reference is invalid.'
+    );
   }
-
-  const beforeCommit = input.beforeCommit;
-  let configCommitted = false;
-  await atomicWriteAsync(credentialPath, input.apiKey, {
-    mode: 0o600,
-    durability: 'strict',
-    syncDirectory: true,
-    beforeCommit: beforeCommit
-      ? async () => {
-          if (configCommitted) return;
-          await beforeCommit();
-          configCommitted = true;
-        }
-      : undefined,
-  });
-  return apiKeyReference;
+  const credentialPath = path.join(realCredentialDirectory, filename);
+  await atomicCreateAsync(credentialPath, input.apiKey, { mode: 0o600 });
+  return { credentialDirectory: realCredentialDirectory, credentialPath };
 }
 
 export async function commitProviderConfigWithCredential(input: {
   readonly homePath: string;
   readonly configPath: string;
-  readonly providerId: string;
   readonly apiKey: string | null;
+  readonly apiKeyReference: string | null;
+  readonly previousApiKeyReference: string | null;
   readonly contents: string;
   readonly mode: number;
 }): Promise<void> {
   const commitConfig = (): Promise<void> =>
     atomicWriteAsync(input.configPath, input.contents, { mode: input.mode });
-  if (!input.apiKey) {
+  if (!input.apiKey || !input.apiKeyReference) {
     await commitConfig();
     return;
   }
-  await writeProviderApiKeyReference({
+  const staged = await writeProviderApiKeyReference({
     homePath: input.homePath,
-    configPath: input.configPath,
-    providerId: input.providerId,
+    apiKeyReference: input.apiKeyReference,
     apiKey: input.apiKey,
-    // Publish the staged private key only after the config commits. A config
-    // failure therefore leaves the previously active key untouched.
-    beforeCommit: commitConfig,
   });
+  try {
+    await commitConfig();
+  } catch (error) {
+    await fs.unlink(staged.credentialPath).catch(() => undefined);
+    throw error;
+  }
+  if (input.previousApiKeyReference && input.previousApiKeyReference !== input.apiKeyReference) {
+    await removeManagedProviderCredential(
+      staged.credentialDirectory,
+      input.previousApiKeyReference
+    ).catch(() => undefined);
+  }
+}
+
+function parseProviderApiKeyFilename(reference: string): string | null {
+  if (!reference.startsWith(PROVIDER_CREDENTIAL_REFERENCE_PREFIX) || !reference.endsWith('}')) {
+    return null;
+  }
+  const filename = reference.slice(PROVIDER_CREDENTIAL_REFERENCE_PREFIX.length, -1);
+  return /^[a-z0-9][a-z0-9._-]{0,190}\.key$/i.test(filename) ? filename : null;
+}
+
+async function removeManagedProviderCredential(
+  credentialDirectory: string,
+  reference: string
+): Promise<void> {
+  const filename = parseProviderApiKeyFilename(reference);
+  if (!filename) return;
+  const credentialPath = path.join(credentialDirectory, filename);
+  const stat = await fs.lstat(credentialPath);
+  if (!stat.isSymbolicLink() && stat.isFile()) await fs.unlink(credentialPath);
 }
 
 export function isPathInside(rootPath: string, targetPath: string): boolean {

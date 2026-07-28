@@ -25,8 +25,8 @@ import { buildOllamaNativeUrl, parseOllamaShowMetadata } from './ollamaRuntimeAp
 import {
   assertProviderApiKeyReplacement,
   buildDeferredProviderListEntry,
-  buildProviderApiKeyReference,
   commitProviderConfigWithCredential,
+  createProviderApiKeyReference,
   isPathInside,
   LocalProviderOperationError,
   normalizeOptionalProviderApiKey,
@@ -339,9 +339,9 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
           'The selected model is no longer reported by the endpoint.'
         );
       }
-
-      const selectedModelConfig = await this.fetchModelConfigMetadata(target, defaultModelId);
-
+      const selectedModelConfig = apiKey
+        ? null
+        : await this.fetchModelConfigMetadata(target, defaultModelId);
       const configPath = await this.writeConfig({
         scope: input.scope,
         projectPath: input.projectPath,
@@ -454,7 +454,7 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
         };
       }
       const reportedModelCount = models.length;
-      if (target.preset.id === 'ollama' && models.length > 0) {
+      if (target.preset.id === 'ollama' && models.length > 0 && !apiKey) {
         models = await this.filterOllamaCompletionModels(baseUrl, models, controller.signal);
       }
       return {
@@ -649,14 +649,13 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
         'The existing OpenCode provider configuration must be an object.'
       );
     }
-    assertProviderApiKeyReplacement(configTree, input.providerId, input.apiKey);
+    const previousApiKeyReference = assertProviderApiKeyReplacement(configTree, input);
     const apiKeyReference = input.apiKey
-      ? buildProviderApiKeyReference({
+      ? createProviderApiKeyReference({
           configPath,
           providerId: input.providerId,
         })
       : null;
-
     let nextRaw = raw;
     if (isNewConfig) {
       nextRaw = setJsoncValue(nextRaw, ['$schema'], 'https://opencode.ai/config.json');
@@ -735,8 +734,9 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
     await commitProviderConfigWithCredential({
       homePath: this.homePath,
       configPath,
-      providerId: input.providerId,
       apiKey: input.apiKey,
+      apiKeyReference,
+      previousApiKeyReference,
       contents: `${nextRaw.trimEnd()}\n`,
       mode: configTarget.mode ?? 0o600,
     });

@@ -192,6 +192,49 @@ describe('OpenCodeLocalProviderConnector safe e2e', () => {
     ).toBe(true);
   });
 
+  it('configures protected Ollama without credentialless native metadata probes', async () => {
+    const projectPath = path.join(tempDir, 'protected-ollama-project');
+    await fs.mkdir(projectPath, { recursive: true });
+    const apiKey = 'protected-ollama-secret';
+    const requestLog: { url: string; authorization: string | null }[] = [];
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      requestLog.push({
+        url,
+        authorization: new Headers(init?.headers).get('authorization'),
+      });
+      if (!url.endsWith('/v1/models')) return new Response(null, { status: 401 });
+      return new Response(JSON.stringify({ data: [{ id: 'qwen3:8b', object: 'model' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const connector = new OpenCodeLocalProviderConnector({ fetchImpl, homePath: tempDir });
+
+    const configured = await connector.configureLocalProvider({
+      runtimeId: 'opencode',
+      scope: 'project',
+      projectPath,
+      presetId: 'ollama',
+      providerId: 'ollama',
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      apiKey,
+      defaultModelId: 'qwen3:8b',
+      setAsDefault: true,
+    });
+
+    expect(configured.error).toBeUndefined();
+    expect(requestLog).toEqual([
+      {
+        url: 'http://127.0.0.1:11434/v1/models',
+        authorization: `Bearer ${apiKey}`,
+      },
+    ]);
+  });
+
   it('uses a bearer key for a remote HTTPS endpoint and stores it in a private referenced file', async () => {
     const projectPath = path.join(tempDir, 'remote-provider-project');
     await fs.mkdir(projectPath, { recursive: true });
@@ -262,7 +305,7 @@ describe('OpenCodeLocalProviderConnector safe e2e', () => {
       };
     };
     expect(parsed.provider.omniroute.options.apiKey).toMatch(
-      /^\{file:~\/\.config\/opencode\/agent-teams-credentials\/omniroute-[a-f0-9]{16}\.key\}$/
+      /^\{file:~\/\.config\/opencode\/agent-teams-credentials\/omniroute-[a-f0-9]{16}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.key\}$/
     );
     const credentialFilename = parsed.provider.omniroute.options.apiKey.slice(
       '{file:~/.config/opencode/agent-teams-credentials/'.length,
@@ -295,16 +338,20 @@ describe('OpenCodeLocalProviderConnector safe e2e', () => {
     });
     expect(rotated.error).toBeUndefined();
     expect(authorizations.at(-1)).toBe(`Bearer ${rotatedApiKey}`);
-    expect(await fs.readFile(credentialPath, 'utf8')).toBe(rotatedApiKey);
     const rotatedRaw = await fs.readFile(configPath, 'utf8');
     expect(rotatedRaw).not.toContain(rotatedApiKey);
-    expect(
-      (
-        JSON.parse(rotatedRaw) as {
-          provider: { omniroute: { options: { apiKey: string } } };
-        }
-      ).provider.omniroute.options.apiKey
-    ).toBe(parsed.provider.omniroute.options.apiKey);
+    const rotatedReference = (
+      JSON.parse(rotatedRaw) as {
+        provider: { omniroute: { options: { apiKey: string } } };
+      }
+    ).provider.omniroute.options.apiKey;
+    expect(rotatedReference).not.toBe(parsed.provider.omniroute.options.apiKey);
+    const rotatedCredentialPath = path.join(
+      credentialDirectory,
+      rotatedReference.slice('{file:~/.config/opencode/agent-teams-credentials/'.length, -1)
+    );
+    expect(await fs.readFile(rotatedCredentialPath, 'utf8')).toBe(rotatedApiKey);
+    await expect(fs.readFile(credentialPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it.skipIf(process.platform === 'win32')(
