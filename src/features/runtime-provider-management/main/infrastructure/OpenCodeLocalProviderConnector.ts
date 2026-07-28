@@ -2,7 +2,6 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { atomicWriteAsync } from '@main/utils/atomicWrite';
 import {
   applyEdits,
   findNodeAtLocation,
@@ -24,13 +23,15 @@ import {
 import { readResponseTextWithLimit } from './boundedResponseBody';
 import { buildOllamaNativeUrl, parseOllamaShowMetadata } from './ollamaRuntimeApi';
 import {
+  assertProviderApiKeyReplacement,
   buildDeferredProviderListEntry,
   buildProviderApiKeyReference,
+  commitProviderConfigWithCredential,
   isPathInside,
   LocalProviderOperationError,
   normalizeOptionalProviderApiKey,
+  readStringNode,
   resolveConfiguredProviderPreset,
-  writeProviderApiKeyReference,
 } from './OpenCodeLocalProviderSupport';
 
 import type {
@@ -648,6 +649,7 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
         'The existing OpenCode provider configuration must be an object.'
       );
     }
+    assertProviderApiKeyReplacement(configTree, input.providerId, input.apiKey);
     const apiKeyReference = input.apiKey
       ? buildProviderApiKeyReference({
           configPath,
@@ -730,26 +732,14 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
       nextRaw = setJsoncValue(nextRaw, ['model'], modelRoute);
       nextRaw = setJsoncValue(nextRaw, ['small_model'], modelRoute);
     }
-    const commitConfig = (): Promise<void> =>
-      atomicWriteAsync(configPath, `${nextRaw.trimEnd()}\n`, {
-        // OpenCode configs can contain provider credentials. Preserve an existing
-        // file's access mode and keep newly-created configs private.
-        mode: configTarget.mode ?? 0o600,
-      });
-    if (input.apiKey) {
-      await writeProviderApiKeyReference({
-        homePath: this.homePath,
-        configPath,
-        providerId: input.providerId,
-        apiKey: input.apiKey,
-        // Stage the private key first, then commit the config before publishing
-        // the replacement over the stable credential path. A config failure
-        // therefore leaves the previously active key untouched.
-        beforeCommit: commitConfig,
-      });
-    } else {
-      await commitConfig();
-    }
+    await commitProviderConfigWithCredential({
+      homePath: this.homePath,
+      configPath,
+      providerId: input.providerId,
+      apiKey: input.apiKey,
+      contents: `${nextRaw.trimEnd()}\n`,
+      mode: configTarget.mode ?? 0o600,
+    });
     return configPath;
   }
 
@@ -1004,10 +994,6 @@ function parseConfigTree(raw: string): JsoncNode {
     );
   }
   return configTree;
-}
-
-function readStringNode(node: JsoncNode | undefined): string | null {
-  return node?.type === 'string' && typeof node.value === 'string' ? node.value : null;
 }
 
 function readObjectEntries(node: JsoncNode): Array<{ key: string; value: JsoncNode }> {

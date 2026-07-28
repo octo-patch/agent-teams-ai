@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 
 import { atomicWriteAsync } from '@main/utils/atomicWrite';
+import { findNodeAtLocation, type Node as JsoncNode } from 'jsonc-parser';
 
 import {
   isRuntimeLocalProviderLoopbackUrl,
@@ -114,6 +115,25 @@ function buildProviderApiKeyFilename(input: {
   return `${input.providerId}-${scopeHash}.key`;
 }
 
+export function readStringNode(node: JsoncNode | undefined): string | null {
+  return node?.type === 'string' && typeof node.value === 'string' ? node.value : null;
+}
+
+export function assertProviderApiKeyReplacement(
+  configTree: JsoncNode,
+  providerId: string,
+  apiKey: string | null
+): void {
+  const existingApiKey = readStringNode(
+    findNodeAtLocation(configTree, ['provider', providerId, 'options', 'apiKey'])
+  );
+  if (apiKey || !existingApiKey?.trim()) return;
+  throw new LocalProviderOperationError(
+    'config-conflict',
+    'Enter a replacement API key before changing an existing protected provider.'
+  );
+}
+
 export async function writeProviderApiKeyReference(input: {
   readonly homePath: string;
   readonly configPath: string;
@@ -203,6 +223,31 @@ export async function writeProviderApiKeyReference(input: {
       : undefined,
   });
   return apiKeyReference;
+}
+
+export async function commitProviderConfigWithCredential(input: {
+  readonly homePath: string;
+  readonly configPath: string;
+  readonly providerId: string;
+  readonly apiKey: string | null;
+  readonly contents: string;
+  readonly mode: number;
+}): Promise<void> {
+  const commitConfig = (): Promise<void> =>
+    atomicWriteAsync(input.configPath, input.contents, { mode: input.mode });
+  if (!input.apiKey) {
+    await commitConfig();
+    return;
+  }
+  await writeProviderApiKeyReference({
+    homePath: input.homePath,
+    configPath: input.configPath,
+    providerId: input.providerId,
+    apiKey: input.apiKey,
+    // Publish the staged private key only after the config commits. A config
+    // failure therefore leaves the previously active key untouched.
+    beforeCommit: commitConfig,
+  });
 }
 
 export function isPathInside(rootPath: string, targetPath: string): boolean {

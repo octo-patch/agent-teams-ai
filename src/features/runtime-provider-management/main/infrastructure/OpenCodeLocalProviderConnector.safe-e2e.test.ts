@@ -378,6 +378,83 @@ describe('OpenCodeLocalProviderConnector safe e2e', () => {
     }
   );
 
+  it('rejects a credentialless collision with a protected provider ID', async () => {
+    const projectPath = path.join(tempDir, 'protected-provider-collision-project');
+    await fs.mkdir(projectPath, { recursive: true });
+    const requestLog: { url: string; authorization: string | null }[] = [];
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ): Promise<Response> => {
+      requestLog.push({
+        url: typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+        authorization: new Headers(init?.headers).get('authorization'),
+      });
+      return new Response(JSON.stringify({ data: [{ id: 'team-model', object: 'model' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const connector = new OpenCodeLocalProviderConnector({ fetchImpl, homePath: tempDir });
+    const originalApiKey = 'omniroute-protected-secret';
+
+    const configured = await connector.configureLocalProvider({
+      runtimeId: 'opencode',
+      scope: 'project',
+      projectPath,
+      presetId: 'custom',
+      providerId: 'omniroute',
+      baseUrl: 'https://old.example.com/v1',
+      apiKey: originalApiKey,
+      defaultModelId: 'team-model',
+      setAsDefault: true,
+    });
+    expect(configured.error).toBeUndefined();
+
+    const configPath = path.join(projectPath, 'opencode.json');
+    const originalConfig = await fs.readFile(configPath, 'utf8');
+    const credentialReference = (
+      JSON.parse(originalConfig) as {
+        provider: { omniroute: { options: { apiKey: string } } };
+      }
+    ).provider.omniroute.options.apiKey;
+    const credentialFilename = credentialReference.slice(
+      '{file:~/.config/opencode/agent-teams-credentials/'.length,
+      -1
+    );
+    const credentialPath = path.join(
+      tempDir,
+      '.config',
+      'opencode',
+      'agent-teams-credentials',
+      credentialFilename
+    );
+
+    const collision = await connector.configureLocalProvider({
+      runtimeId: 'opencode',
+      scope: 'project',
+      projectPath,
+      presetId: 'custom',
+      providerId: 'omniroute',
+      baseUrl: 'https://new.example.com/v1',
+      defaultModelId: 'team-model',
+      setAsDefault: true,
+    });
+
+    expect(collision.configuration).toBeUndefined();
+    expect(collision.error).toMatchObject({ code: 'config-conflict' });
+    expect(collision.error?.message).toContain('replacement API key');
+    expect(requestLog).toEqual([
+      {
+        url: 'https://old.example.com/v1/models',
+        authorization: `Bearer ${originalApiKey}`,
+      },
+      { url: 'https://new.example.com/v1/models', authorization: null },
+    ]);
+    expect(await fs.readFile(configPath, 'utf8')).toBe(originalConfig);
+    expect(await fs.readFile(credentialPath, 'utf8')).toBe(originalApiKey);
+  });
+
   it.skipIf(process.platform === 'win32')(
     'refuses to write a remote API key through a symlinked credential directory',
     async () => {
