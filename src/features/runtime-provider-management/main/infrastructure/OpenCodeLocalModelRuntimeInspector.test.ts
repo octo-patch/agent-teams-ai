@@ -305,6 +305,29 @@ describe('inspectOpenCodeLocalModelRuntimeReadiness', () => {
     expect(probeCoordination).not.toHaveBeenCalled();
   });
 
+  it('skips Ollama metadata and coordination probes when its loopback endpoint has an API key', async () => {
+    const inventory = createInventory([{ ...ollamaProvider(), hasConfiguredApiKey: true }]);
+    const fetchImpl = vi.fn<typeof fetch>();
+    const probeCoordination = vi.fn(coordinationPassed);
+
+    const result = await inspectOpenCodeLocalModelRuntimeReadiness(
+      {
+        projectPath: TEST_PROJECT_PATH,
+        modelRoute: 'ollama/qwen2.5:0.5b',
+      },
+      { inventory, fetchImpl, probeCoordination }
+    );
+
+    expect(result).toMatchObject({
+      severity: 'warning',
+      code: 'local_runtime_unverified',
+      coordinationProbeStatus: null,
+    });
+    expect(result?.message).toContain('configured with an API key');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(probeCoordination).not.toHaveBeenCalled();
+  });
+
   it('blocks a known local route when its provider configuration is unavailable', async () => {
     const inventory = createInventory([]);
 

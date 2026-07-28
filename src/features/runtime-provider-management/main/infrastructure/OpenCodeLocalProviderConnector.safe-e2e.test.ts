@@ -308,6 +308,77 @@ describe('OpenCodeLocalProviderConnector safe e2e', () => {
   });
 
   it.skipIf(process.platform === 'win32')(
+    'keeps the active API key when the config commit fails during credential rotation',
+    async () => {
+      const projectPath = path.join(tempDir, 'failed-rotation-project');
+      await fs.mkdir(projectPath, { recursive: true });
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ data: [{ id: 'team-model', object: 'model' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })) as typeof fetch;
+      const connector = new OpenCodeLocalProviderConnector({ fetchImpl, homePath: tempDir });
+      const originalApiKey = 'omniroute-original-secret';
+
+      const configured = await connector.configureLocalProvider({
+        runtimeId: 'opencode',
+        scope: 'project',
+        projectPath,
+        presetId: 'custom',
+        providerId: 'omniroute',
+        baseUrl: 'https://models.example.com/v1',
+        apiKey: originalApiKey,
+        defaultModelId: 'team-model',
+        setAsDefault: true,
+      });
+      expect(configured.error).toBeUndefined();
+
+      const configPath = path.join(projectPath, 'opencode.json');
+      const originalConfig = await fs.readFile(configPath, 'utf8');
+      const credentialReference = (
+        JSON.parse(originalConfig) as {
+          provider: { omniroute: { options: { apiKey: string } } };
+        }
+      ).provider.omniroute.options.apiKey;
+      const credentialFilename = credentialReference.slice(
+        '{file:~/.config/opencode/agent-teams-credentials/'.length,
+        -1
+      );
+      const credentialDirectory = path.join(
+        tempDir,
+        '.config',
+        'opencode',
+        'agent-teams-credentials'
+      );
+      const credentialPath = path.join(credentialDirectory, credentialFilename);
+
+      await fs.chmod(projectPath, 0o500);
+      let rotated;
+      try {
+        rotated = await connector.configureLocalProvider({
+          runtimeId: 'opencode',
+          scope: 'project',
+          projectPath,
+          presetId: 'custom',
+          providerId: 'omniroute',
+          baseUrl: 'https://models.example.com/v1',
+          apiKey: 'omniroute-rejected-rotation',
+          defaultModelId: 'team-model',
+          setAsDefault: true,
+        });
+      } finally {
+        await fs.chmod(projectPath, 0o700);
+      }
+
+      expect(rotated.configuration).toBeUndefined();
+      expect(rotated.error).toMatchObject({ code: 'write-failed' });
+      expect(await fs.readFile(configPath, 'utf8')).toBe(originalConfig);
+      expect(await fs.readFile(credentialPath, 'utf8')).toBe(originalApiKey);
+      expect(await fs.readdir(credentialDirectory)).toEqual([credentialFilename]);
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')(
     'refuses to write a remote API key through a symlinked credential directory',
     async () => {
       const projectPath = path.join(tempDir, 'remote-provider-symlink-project');

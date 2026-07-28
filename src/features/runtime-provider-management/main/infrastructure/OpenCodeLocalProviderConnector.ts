@@ -25,6 +25,7 @@ import { readResponseTextWithLimit } from './boundedResponseBody';
 import { buildOllamaNativeUrl, parseOllamaShowMetadata } from './ollamaRuntimeApi';
 import {
   buildDeferredProviderListEntry,
+  buildProviderApiKeyReference,
   isPathInside,
   LocalProviderOperationError,
   normalizeOptionalProviderApiKey,
@@ -648,11 +649,9 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
       );
     }
     const apiKeyReference = input.apiKey
-      ? await writeProviderApiKeyReference({
-          homePath: this.homePath,
+      ? buildProviderApiKeyReference({
           configPath,
           providerId: input.providerId,
-          apiKey: input.apiKey,
         })
       : null;
 
@@ -731,11 +730,26 @@ export class OpenCodeLocalProviderConnector implements RuntimeLocalProviderConne
       nextRaw = setJsoncValue(nextRaw, ['model'], modelRoute);
       nextRaw = setJsoncValue(nextRaw, ['small_model'], modelRoute);
     }
-    await atomicWriteAsync(configPath, `${nextRaw.trimEnd()}\n`, {
-      // OpenCode configs can contain provider credentials. Preserve an existing
-      // file's access mode and keep newly-created configs private.
-      mode: configTarget.mode ?? 0o600,
-    });
+    const commitConfig = (): Promise<void> =>
+      atomicWriteAsync(configPath, `${nextRaw.trimEnd()}\n`, {
+        // OpenCode configs can contain provider credentials. Preserve an existing
+        // file's access mode and keep newly-created configs private.
+        mode: configTarget.mode ?? 0o600,
+      });
+    if (input.apiKey) {
+      await writeProviderApiKeyReference({
+        homePath: this.homePath,
+        configPath,
+        providerId: input.providerId,
+        apiKey: input.apiKey,
+        // Stage the private key first, then commit the config before publishing
+        // the replacement over the stable credential path. A config failure
+        // therefore leaves the previously active key untouched.
+        beforeCommit: commitConfig,
+      });
+    } else {
+      await commitConfig();
+    }
     return configPath;
   }
 

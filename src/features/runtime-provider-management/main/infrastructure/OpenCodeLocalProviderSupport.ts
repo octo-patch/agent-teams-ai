@@ -95,11 +95,31 @@ export function buildDeferredProviderListEntry(
   };
 }
 
+export function buildProviderApiKeyReference(input: {
+  readonly configPath: string;
+  readonly providerId: string;
+}): string {
+  const filename = buildProviderApiKeyFilename(input);
+  return `{file:~/${PROVIDER_CREDENTIAL_DIRECTORY_SEGMENTS.join('/')}/${filename}}`;
+}
+
+function buildProviderApiKeyFilename(input: {
+  readonly configPath: string;
+  readonly providerId: string;
+}): string {
+  const scopeHash = createHash('sha256')
+    .update(path.resolve(input.configPath))
+    .digest('hex')
+    .slice(0, 16);
+  return `${input.providerId}-${scopeHash}.key`;
+}
+
 export async function writeProviderApiKeyReference(input: {
   readonly homePath: string;
   readonly configPath: string;
   readonly providerId: string;
   readonly apiKey: string;
+  readonly beforeCommit?: () => Promise<void>;
 }): Promise<string> {
   let realHomePath: string;
   try {
@@ -147,11 +167,8 @@ export async function writeProviderApiKeyReference(input: {
     await fs.chmod(realCredentialDirectory, 0o700);
   }
 
-  const scopeHash = createHash('sha256')
-    .update(path.resolve(input.configPath))
-    .digest('hex')
-    .slice(0, 16);
-  const filename = `${input.providerId}-${scopeHash}.key`;
+  const apiKeyReference = buildProviderApiKeyReference(input);
+  const filename = buildProviderApiKeyFilename(input);
   const credentialPath = path.join(realCredentialDirectory, filename);
   try {
     const existing = await fs.lstat(credentialPath);
@@ -171,12 +188,21 @@ export async function writeProviderApiKeyReference(input: {
     }
   }
 
+  const beforeCommit = input.beforeCommit;
+  let configCommitted = false;
   await atomicWriteAsync(credentialPath, input.apiKey, {
     mode: 0o600,
     durability: 'strict',
     syncDirectory: true,
+    beforeCommit: beforeCommit
+      ? async () => {
+          if (configCommitted) return;
+          await beforeCommit();
+          configCommitted = true;
+        }
+      : undefined,
   });
-  return `{file:~/${PROVIDER_CREDENTIAL_DIRECTORY_SEGMENTS.join('/')}/${filename}}`;
+  return apiKeyReference;
 }
 
 export function isPathInside(rootPath: string, targetPath: string): boolean {

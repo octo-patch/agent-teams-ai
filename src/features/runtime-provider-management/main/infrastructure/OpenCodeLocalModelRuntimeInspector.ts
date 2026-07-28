@@ -154,26 +154,27 @@ export async function inspectOpenCodeLocalModelRuntimeReadiness(
       probeCoordination
     );
 
+  const remote = !isRuntimeLocalProviderLoopbackUrl(provider.baseUrl);
+  if (provider.hasConfiguredApiKey || (provider.preset.id !== 'ollama' && remote)) {
+    return {
+      providerId: parsed.sourceId,
+      modelId: parsed.modelId,
+      presetId: provider.preset.id,
+      toolCapable: null,
+      parameterCount: null,
+      trainedContextTokens: null,
+      configuredContextTokens: null,
+      effectiveContextTokens: null,
+      coordinationProbeStatus: null,
+      severity: 'warning',
+      code: 'local_runtime_unverified',
+      message:
+        `${provider.preset.displayName} is ${remote ? 'a remote endpoint' : 'configured with an API key'}. ` +
+        'Agent Teams does not send credentials through its direct coordination probe; the OpenCode execution probe is authoritative.',
+    };
+  }
+
   if (provider.preset.id !== 'ollama') {
-    const remote = !isRuntimeLocalProviderLoopbackUrl(provider.baseUrl);
-    if (remote || provider.hasConfiguredApiKey) {
-      return {
-        providerId: parsed.sourceId,
-        modelId: parsed.modelId,
-        presetId: provider.preset.id,
-        toolCapable: null,
-        parameterCount: null,
-        trainedContextTokens: null,
-        configuredContextTokens: null,
-        effectiveContextTokens: null,
-        coordinationProbeStatus: null,
-        severity: 'warning',
-        code: 'local_runtime_unverified',
-        message:
-          `${provider.preset.displayName} is ${remote ? 'a remote endpoint' : 'configured with an API key'}. ` +
-          'Agent Teams does not send credentials through its direct coordination probe; the OpenCode execution probe is authoritative.',
-      };
-    }
     const coordination = await probeCoordinationReliably();
     if (coordination.status !== 'passed') {
       return buildCoordinationProbeFailure({
